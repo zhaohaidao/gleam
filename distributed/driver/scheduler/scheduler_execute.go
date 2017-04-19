@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"log"
 	"os"
 	"sync"
@@ -8,12 +9,17 @@ import (
 
 	"github.com/chrislusf/gleam/distributed/netchan"
 	"github.com/chrislusf/gleam/distributed/plan"
-	"github.com/chrislusf/gleam/distributed/resource"
 	"github.com/chrislusf/gleam/flow"
+	"github.com/chrislusf/gleam/pb"
 	"github.com/chrislusf/gleam/util"
 )
 
-func (s *Scheduler) remoteExecuteOnLocation(flowContext *flow.FlowContext, taskGroup *plan.TaskGroup, allocation resource.Allocation, wg *sync.WaitGroup) {
+func (s *Scheduler) remoteExecuteOnLocation(ctx context.Context,
+	flowContext *flow.FlowContext,
+	statusTaskGroup *pb.FlowExecutionStatus_TaskGroup,
+	taskGroup *plan.TaskGroup,
+	allocation *pb.Allocation, wg *sync.WaitGroup) error {
+
 	// s.setupInputChannels(flowContext, tasks[0], allocation.Location, wg)
 
 	// fmt.Printf("allocated %s on %v\n", tasks[0].Name(), allocation.Location)
@@ -27,93 +33,97 @@ func (s *Scheduler) remoteExecuteOnLocation(flowContext *flow.FlowContext, taskG
 	lastInstruction := instructions.GetInstructions()[len(instructions.GetInstructions())-1]
 	firstTask := taskGroup.Tasks[0]
 	lastTask := taskGroup.Tasks[len(taskGroup.Tasks)-1]
-	var inputLocations, outputLocations []resource.DataLocation
+	var inputLocations, outputLocations []pb.DataLocation
 	for _, shard := range firstTask.InputShards {
-		loc, hasLocation := s.GetShardLocation(shard)
+		loc, hasLocation := s.getShardLocation(shard)
 		if !hasLocation {
 			log.Printf("The shard is missing?: %s", shard.Name())
 			continue
 		}
-		inputLocations = append(inputLocations, resource.DataLocation{
-			Name:     shard.Name(),
-			Location: loc,
-		})
+		inputLocations = append(inputLocations, loc)
 	}
 	for _, shard := range lastTask.OutputShards {
-		outputLocations = append(outputLocations, resource.DataLocation{
+		outputLocations = append(outputLocations, pb.DataLocation{
 			Name:     shard.Name(),
 			Location: allocation.Location,
+			OnDisk:   shard.Dataset.GetIsOnDiskIO(),
 		})
 	}
 
 	firstInstruction.SetInputLocations(inputLocations)
 	lastInstruction.SetOutputLocations(outputLocations)
 
-	instructions.FlowHashCode = &flowContext.HashCode
-	request := NewStartRequest(
-		s.Option.Module,
-		instructions,
-		allocation.Allocated,
-		os.Environ(),
-		s.Option.DriverHost,
-		int32(s.Option.DriverPort),
-	)
+	instructions.FlowHashCode = flowContext.HashCode
+	instructions.IsProfiling = false // enable this when profiling executors
 
-	status, isOld := s.getRemoteExecutorStatus(instructions.HashCode())
-	if isOld {
-		log.Printf("Replacing old request: %v", status)
+	request := &pb.ExecutionRequest{
+		Instructions: instructions,
+		Dir:          s.Option.Module,
+		Name:         taskGroup.String(),
+		Resource:     allocation.Allocated,
 	}
-	status.RequestTime = time.Now()
-	status.Allocation = allocation
-	status.Request = request
-	taskGroup.RequestId = instructions.HashCode()
+	statusTaskGroup.Request = request
 
-	// fmt.Printf("starting on %s: %v\n", allocation.Allocated, request)
+	statusExecution := &pb.FlowExecutionStatus_TaskGroup_Execution{}
+	statusTaskGroup.Executions = append(statusTaskGroup.Executions, statusExecution)
+	statusExecution.StartTime = time.Now().UnixNano()
+	defer func() {
+		statusExecution.StopTime = time.Now().UnixNano()
+	}()
 
-	if err := RemoteDirectExecute(allocation.Location.URL(), request); err != nil {
-		log.Printf("remote exeuction error %v: %v", err, request)
+	// println("RequestId:", taskGroup.RequestId, instructions.FlowHashCode)
+
+	if err := sendExecutionRequest(ctx, statusExecution, allocation.Location.URL(), request); err != nil {
+		log.Printf("remote execution error: %v", err)
+		statusExecution.Error = []byte(err.Error())
+		return err
 	}
-	status.StopTime = time.Now()
+
+	return nil
 }
 
-func (s *Scheduler) localExecute(flowContext *flow.FlowContext, task *flow.Task, wg *sync.WaitGroup) {
+func (s *Scheduler) localExecute(ctx context.Context, flowContext *flow.FlowContext, task *flow.Task, wg *sync.WaitGroup) {
 	if task.Step.OutputDataset == nil {
-		s.localExecuteOutput(flowContext, task, wg)
+		s.localExecuteOutput(ctx, flowContext, task, wg)
 	} else {
-		s.localExecuteSource(flowContext, task, wg)
+		s.localExecuteSource(ctx, flowContext, task, wg)
 	}
 }
 
-func (s *Scheduler) localExecuteSource(flowContext *flow.FlowContext, task *flow.Task, wg *sync.WaitGroup) {
+func (s *Scheduler) localExecuteSource(ctx context.Context, flowContext *flow.FlowContext, task *flow.Task, wg *sync.WaitGroup) {
 	s.shardLocator.waitForOutputDatasetShardLocations(task)
 
 	for _, shard := range task.OutputShards {
-		location, _ := s.GetShardLocation(shard)
+		location, _ := s.getShardLocation(shard)
 		shard.IncomingChan = util.NewPiper()
 		wg.Add(1)
 		go func(shard *flow.DatasetShard) {
 			// println(task.Step.Name, "writing to", shard.Name(), "at", location.URL())
-			if err := netchan.DialWriteChannel(wg, "driver_input", location.URL(), shard.Name(), shard.IncomingChan.Reader, len(shard.ReadingTasks)); err != nil {
-				println("starting:", task.Step.Name, "output location:", location.URL(), shard.Name(), "error:", err.Error())
+			if err := netchan.DialWriteChannel(ctx, wg, "driver_input", location.Location.URL(), shard.Name(), shard.Dataset.GetIsOnDiskIO(), shard.IncomingChan.Reader, len(shard.ReadingTasks)); err != nil {
+				println("starting:", task.Step.Name, "output location:", location.Location.URL(), shard.Name(), "error:", err.Error())
 			}
 		}(shard)
 	}
-	task.Step.RunFunction(task)
+	if err := task.Step.RunFunction(task); err != nil {
+		log.Fatalf("Failed to send source data: %v", err)
+	}
 }
 
-func (s *Scheduler) localExecuteOutput(flowContext *flow.FlowContext, task *flow.Task, wg *sync.WaitGroup) {
+func (s *Scheduler) localExecuteOutput(ctx context.Context, flowContext *flow.FlowContext, task *flow.Task, wg *sync.WaitGroup) {
 	s.shardLocator.waitForInputDatasetShardLocations(task)
 
 	for i, shard := range task.InputShards {
-		location, _ := s.GetShardLocation(shard)
+		location, _ := s.getShardLocation(shard)
 		inChan := task.InputChans[i]
 		wg.Add(1)
 		go func(shard *flow.DatasetShard) {
-			// println(task.Step.Name, "reading from", shard.Name(), "at", location.URL(), "to", inChan)
-			if err := netchan.DialReadChannel(wg, "driver_output", location.URL(), shard.Name(), inChan.Writer); err != nil {
-				println("starting:", task.Step.Name, "input location:", location.URL(), shard.Name(), "error:", err.Error())
+			// println(task.Step.Name, "reading from", shard.Name(), "at", location.Location.URL(), "to", inChan, "onDisk", shard.Dataset.GetIsOnDiskIO())
+			if err := netchan.DialReadChannel(ctx, wg, "driver_output", location.Location.URL(), shard.Name(), shard.Dataset.GetIsOnDiskIO(), inChan.Writer); err != nil {
+				println("starting:", task.Step.Name, "input location:", location.Location.URL(), shard.Name(), "error:", err.Error())
 			}
 		}(shard)
 	}
-	task.Step.RunFunction(task)
+	if err := task.Step.RunFunction(task); err != nil {
+		log.Fatalf("Failed to collect output: %v", err)
+	}
 }

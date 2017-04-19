@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io"
@@ -13,23 +12,27 @@ import (
 
 func (as *AgentServer) handleReadConnection(conn net.Conn, readerName, channelName string) {
 
-	// println(name, "is waited to read")
+	log.Printf("on disk %s waits for %s", readerName, channelName)
 
 	dsStore := as.storageBackend.WaitForNamedDatasetShard(channelName)
 
-	// println(readerName, "start reading", channelName)
-
-	writer := bufio.NewWriterSize(conn, util.BUFFER_SIZE)
+	log.Printf("on disk %s starts reading %s", readerName, channelName)
 
 	var offset int64
+	var err error
 
-	buf := make([]byte, 4)
+	var size int32
+	sizeBuf := make([]byte, 4)
+	sizeReader := bytes.NewReader(sizeBuf)
 
 	var count int64
+	messageBytesCache := make([]byte, util.BUFFER_SIZE)
+	var messageBytes []byte
 
+	messageWriter := util.NewBufferedMessageWriter(conn, util.BUFFER_SIZE)
 	// loop for every read
 	for {
-		_, err := dsStore.ReadAt(buf, offset)
+		_, err = dsStore.ReadAt(sizeBuf, offset)
 		if err != nil {
 			// connection is closed
 			if err != io.EOF {
@@ -39,17 +42,20 @@ func (as *AgentServer) handleReadConnection(conn net.Conn, readerName, channelNa
 			break
 		}
 
-		var size int32
-		binary.Read(bytes.NewReader(buf), binary.LittleEndian, &size)
-		if size < 0 {
-			// size == -1 means EOF
+		sizeReader.Reset(sizeBuf)
+		binary.Read(sizeReader, binary.LittleEndian, &size)
+		if size == int32(util.MessageControlEOF) {
 			break
 		}
 
 		// println("reading", channelName, offset, "size:", size)
 
 		offset += 4
-		messageBytes := make([]byte, size)
+		if size > util.BUFFER_SIZE {
+			messageBytes = make([]byte, size)
+		} else {
+			messageBytes = messageBytesCache[0:size]
+		}
 		_, err = dsStore.ReadAt(messageBytes, offset)
 		if err != nil {
 			// connection is closed
@@ -60,13 +66,20 @@ func (as *AgentServer) handleReadConnection(conn net.Conn, readerName, channelNa
 		}
 		offset += int64(size)
 
-		util.WriteMessage(writer, messageBytes)
+		err = messageWriter.WriteMessage(messageBytes)
+		if err != nil {
+			log.Printf("%s failed to receive %s at %d: %v", readerName, channelName, offset, err)
+			break
+		}
 
 		count += int64(size)
 
 	}
+	messageWriter.Flush()
 
-	writer.Flush()
-
-	// println(readerName, "finish reading", channelName, count, "bytes")
+	if err != nil {
+		log.Printf("on disk %s finished reading %s %d bytes error: %v", readerName, channelName, count, err)
+	} else {
+		log.Printf("on disk %s finished reading %s %d bytes", readerName, channelName, count)
+	}
 }

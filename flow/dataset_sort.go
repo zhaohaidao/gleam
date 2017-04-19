@@ -14,78 +14,80 @@ type pair struct {
 	data []byte
 }
 
-func (d *Dataset) Sort(indexes ...int) *Dataset {
-	if len(indexes) == 0 {
-		indexes = []int{1}
-	}
-	orderBys := getOrderBysFromIndexes(indexes)
-	ret := d.LocalSort(orderBys)
+// Distinct sort on specific fields and pick the unique ones.
+// Required Memory: about same size as each partition.
+// example usage: Distinct(Field(1,2)) means
+// distinct on field 1 and 2.
+// TODO: optimize for low cardinality case.
+func (d *Dataset) Distinct(sortOptions ...*SortOption) *Dataset {
+	sortOption := concat(sortOptions)
+
+	ret := d.LocalSort(sortOption).LocalDistinct(sortOption)
 	if len(d.Shards) > 1 {
-		ret = ret.MergeSortedTo(1, orderBys)
+		ret = ret.MergeSortedTo(1, sortOption).LocalDistinct(sortOption)
 	}
 	return ret
 }
 
-func (d *Dataset) SortBy(orderBys ...instruction.OrderBy) *Dataset {
-	if len(orderBys) == 0 {
-		orderBys = []instruction.OrderBy{instruction.OrderBy{1, instruction.Ascending}}
-	}
-	ret := d.LocalSort(orderBys)
-	if len(d.Shards) > 1 {
-		ret = ret.MergeSortedTo(1, orderBys)
-	}
+// Sort sort on specific fields, default to the first field.
+// Required Memory: about same size as each partition.
+// example usage: Sort(Field(1,2)) means
+// sorting on field 1 and 2.
+func (d *Dataset) Sort(sortOptions ...*SortOption) *Dataset {
+	sortOption := concat(sortOptions)
+
+	ret := d.LocalSort(sortOption)
+	ret = ret.TreeMergeSortedTo(1, 10, sortOption)
 	return ret
 }
 
 // Top streams through total n items, picking reverse ordered k items with O(n*log(k)) complexity.
-func (d *Dataset) Top(k int, orderBys ...instruction.OrderBy) *Dataset {
-	if len(orderBys) == 0 {
-		orderBys = []instruction.OrderBy{instruction.OrderBy{1, instruction.Ascending}}
-	}
-	ret := d.LocalTop(k, orderBys)
+// Required Memory: about same size as n items in memory
+func (d *Dataset) Top(k int, sortOptions ...*SortOption) *Dataset {
+	sortOption := concat(sortOptions)
+
+	ret := d.LocalTop(k, sortOption)
 	if len(d.Shards) > 1 {
-		ret = ret.MergeSortedTo(1, orderBys).LocalLimit(k)
+		ret = ret.MergeSortedTo(1, sortOption).LocalLimit(k, 0)
 	}
 	return ret
 }
 
-func (d *Dataset) LocalSort(orderBys []instruction.OrderBy) *Dataset {
-	if isOrderByEquals(d.IsLocalSorted, orderBys) {
+func (d *Dataset) LocalDistinct(sortOptions ...*SortOption) *Dataset {
+	sortOption := concat(sortOptions)
+
+	ret, step := add1ShardTo1Step(d)
+	ret.IsLocalSorted = sortOption.orderByList
+	ret.IsPartitionedBy = d.IsPartitionedBy
+	step.SetInstruction(instruction.NewLocalDistinct(sortOption.orderByList))
+	return ret
+}
+
+func (d *Dataset) LocalSort(sortOptions ...*SortOption) *Dataset {
+	sortOption := concat(sortOptions)
+
+	if isOrderByEquals(d.IsLocalSorted, sortOption.orderByList) {
 		return d
 	}
 
 	ret, step := add1ShardTo1Step(d)
-	ret.IsLocalSorted = orderBys
+	ret.IsLocalSorted = sortOption.orderByList
 	ret.IsPartitionedBy = d.IsPartitionedBy
-	step.SetInstruction(instruction.NewLocalSort(orderBys))
+	step.SetInstruction(instruction.NewLocalSort(sortOption.orderByList, int(d.GetPartitionSize())*3))
 	return ret
 }
 
-func (d *Dataset) LocalTop(n int, orderBys []instruction.OrderBy) *Dataset {
-	if isOrderByExactReverse(d.IsLocalSorted, orderBys) {
-		return d.LocalLimit(n)
+func (d *Dataset) LocalTop(n int, sortOptions ...*SortOption) *Dataset {
+	sortOption := concat(sortOptions)
+
+	if isOrderByExactReverse(d.IsLocalSorted, sortOption.orderByList) {
+		return d.LocalLimit(n, 0)
 	}
 
 	ret, step := add1ShardTo1Step(d)
-	ret.IsLocalSorted = orderBys
+	ret.IsLocalSorted = sortOption.orderByList
 	ret.IsPartitionedBy = d.IsPartitionedBy
-	step.SetInstruction(instruction.NewLocalTop(n, orderBys))
-	return ret
-}
-
-func (d *Dataset) MergeSortedTo(partitionCount int, orderBys []instruction.OrderBy) (ret *Dataset) {
-	if len(d.Shards) == partitionCount {
-		return d
-	}
-	ret = d.FlowContext.newNextDataset(partitionCount)
-	everyN := len(d.Shards) / partitionCount
-	if len(d.Shards)%partitionCount > 0 {
-		everyN++
-	}
-	ret.IsLocalSorted = orderBys
-	ret.IsPartitionedBy = d.IsPartitionedBy
-	step := d.FlowContext.AddLinkedNToOneStep(d, everyN, ret)
-	step.SetInstruction(instruction.NewMergeSortedTo(orderBys))
+	step.SetInstruction(instruction.NewLocalTop(n, sortOption.orderByList))
 	return ret
 }
 

@@ -4,26 +4,26 @@ import (
 	"bytes"
 	"sync"
 
-	"github.com/chrislusf/gleam/distributed/resource"
 	"github.com/chrislusf/gleam/flow"
+	"github.com/chrislusf/gleam/pb"
 )
 
 type DatasetShardLocator struct {
 	sync.Mutex
-	datasetShard2Location     map[string]resource.Location
+	datasetShard2Location     map[string]pb.DataLocation
 	datasetShard2LocationLock sync.Mutex
 	waitForAllInputs          *sync.Cond
 }
 
 func NewDatasetShardLocator() *DatasetShardLocator {
 	l := &DatasetShardLocator{
-		datasetShard2Location: make(map[string]resource.Location),
+		datasetShard2Location: make(map[string]pb.DataLocation),
 	}
 	l.waitForAllInputs = sync.NewCond(l)
 	return l
 }
 
-func (l *DatasetShardLocator) GetShardLocation(shardName string) (resource.Location, bool) {
+func (l *DatasetShardLocator) GetShardLocation(shardName string) (pb.DataLocation, bool) {
 	l.datasetShard2LocationLock.Lock()
 	defer l.datasetShard2LocationLock.Unlock()
 
@@ -31,7 +31,7 @@ func (l *DatasetShardLocator) GetShardLocation(shardName string) (resource.Locat
 	return loc, hasValue
 }
 
-func (l *DatasetShardLocator) SetShardLocation(name string, location resource.Location) {
+func (l *DatasetShardLocator) SetShardLocation(name string, location pb.DataLocation) {
 	l.Lock()
 	defer l.Unlock()
 
@@ -90,7 +90,7 @@ func (l *DatasetShardLocator) allInputLocations(task *flow.Task) string {
 		}
 		buf.WriteString(name)
 		buf.WriteString("@")
-		buf.WriteString(location.URL())
+		buf.WriteString(location.Location.URL())
 	}
 	return buf.String()
 }

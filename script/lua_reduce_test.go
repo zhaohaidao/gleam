@@ -9,7 +9,7 @@ import (
 
 func TestLuaReduce(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test ReduceBy",
 		func(script Script) {
 			script.Reduce(`
@@ -36,7 +36,7 @@ func TestLuaReduce(t *testing.T) {
 
 func TestLuaReduceByMultipleValues(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test ReduceBy",
 		func(script Script) {
 			script.ReduceBy(`
@@ -73,7 +73,7 @@ func TestLuaReduceByMultipleValues(t *testing.T) {
 
 func TestLuaReduceBySingleValues(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test ReduceBy",
 		func(script Script) {
 			script.ReduceBy(`
@@ -108,9 +108,33 @@ func TestLuaReduceBySingleValues(t *testing.T) {
 	)
 }
 
+func TestLuaReduceByWithNil(t *testing.T) {
+	testLuaScript(
+		"test ReduceBy with nil",
+		func(script Script) {
+			script.ReduceBy(`
+				function(x, y, a, b)
+					return a, b
+				end
+			`, []int{1})
+		},
+		func(inputWriter io.Writer) {
+			util.WriteRow(inputWriter, "key1", 100, nil)
+			util.WriteRow(inputWriter, "key1", 101, 3)
+		},
+		func(outputReader io.Reader) {
+			row, _ := util.ReadRow(outputReader)
+			t.Logf("row1: %+v", row)
+			if !(row[1].(uint64) == 101 && row[2].(uint64) == 3) {
+				t.Errorf("failed ReduceBy results: [%s %d %d]", row...)
+			}
+		},
+	)
+}
+
 func TestLuaGroupByMultipleValue(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test GroupBy",
 		func(script Script) {
 			script.GroupBy([]int{1, 2})
@@ -143,7 +167,7 @@ func TestLuaGroupByMultipleValue(t *testing.T) {
 
 func TestLuaGroupByZeroValue(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test GroupBy",
 		func(script Script) {
 			script.GroupBy([]int{1, 2})
@@ -176,7 +200,7 @@ func TestLuaGroupByZeroValue(t *testing.T) {
 
 func TestLuaGroupBySingleValues(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test GroupBy",
 		func(script Script) {
 			script.GroupBy([]int{1, 2})

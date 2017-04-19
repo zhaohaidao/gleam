@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bufio"
 	"io"
+	"log"
 	"net"
 
 	"github.com/chrislusf/gleam/util"
@@ -9,13 +11,30 @@ import (
 
 func (as *AgentServer) handleInMemoryReadConnection(conn net.Conn, readerName, channelName string) {
 
-	// println(readerName, "waits for", channelName)
+	log.Printf("in memory %s waits for %s", readerName, channelName)
 
 	ch := as.inMemoryChannels.WaitForNamedDatasetShard(channelName)
 
-	// println(readerName, "start reading", channelName)
-	buf := make([]byte, util.BUFFER_SIZE)
-	io.CopyBuffer(conn, ch.Reader, buf)
+	if ch == nil {
+		log.Printf("in memory %s read an empty %s", readerName, channelName)
+		return
+	}
 
-	// println(readerName, "finish reading", channelName)
+	writer := bufio.NewWriter(conn)
+	defer writer.Flush()
+
+	log.Printf("in memory %s start reading %s", readerName, channelName)
+	buf := make([]byte, util.BUFFER_SIZE)
+	count, err := io.CopyBuffer(writer, ch.Reader, buf)
+
+	if err == nil {
+		if ch.Error != nil {
+			log.Printf("in memory %s failed because writing to %s failed: %d %v", readerName, channelName, count, ch.Error)
+		} else {
+			log.Printf("in memory %s finished reading %s %d bytes", readerName, channelName, count)
+		}
+	} else {
+		log.Printf("in memory %s failed reading %s %d bytes %v", readerName, channelName, count, err)
+	}
+
 }

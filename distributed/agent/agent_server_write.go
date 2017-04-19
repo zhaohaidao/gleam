@@ -1,12 +1,9 @@
 package agent
 
 import (
-	"bufio"
 	"io"
 	"log"
-	"net"
 
-	"github.com/chrislusf/gleam/msg"
 	"github.com/chrislusf/gleam/util"
 )
 
@@ -14,35 +11,31 @@ func (as *AgentServer) handleLocalWriteConnection(reader io.Reader, writerName, 
 
 	dsStore := as.storageBackend.CreateNamedDatasetShard(channelName)
 
-	// println(writerName, "start writing to", channelName, "expected reader:", readerCount)
+	log.Printf("on disk %s starts writing %s expected reader:%d", writerName, channelName, readerCount)
 
 	var count int64
 
-	r := bufio.NewReaderSize(reader, util.BUFFER_SIZE)
+	messageWriter := util.NewBufferedMessageWriter(dsStore, util.BUFFER_SIZE)
 
 	for {
-		message, err := util.ReadMessage(r)
+
+		message, err := util.ReadMessage(reader)
 		if err == io.EOF {
 			// println("agent recv eof:", string(message.Bytes()))
 			break
 		}
 		if err == nil {
 			count += int64(len(message))
-			util.WriteMessage(dsStore, message)
+			messageWriter.WriteMessage(message)
 			// println("agent recv:", string(message.Bytes()))
 		} else {
-			log.Printf("Failed to read message: %v", err)
+			log.Printf("on disk %s Failed to write to %s: %v", writerName, channelName, err)
 		}
 	}
 
-	// println(writerName, "finish writing to", channelName, count, "bytes")
+	messageWriter.Flush()
 	util.WriteEOFMessage(dsStore)
-}
 
-func (as *AgentServer) handleDeleteDatasetShard(conn net.Conn,
-	deleteRequest *msg.DeleteDatasetShardRequest) *msg.DeleteDatasetShardResponse {
+	log.Printf("on disk %s finished writing %s %d bytes", writerName, channelName, count)
 
-	as.storageBackend.DeleteNamedDatasetShard(*deleteRequest.Name)
-
-	return nil
 }

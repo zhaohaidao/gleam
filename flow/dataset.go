@@ -7,10 +7,11 @@ import (
 	"github.com/chrislusf/gleam/util"
 )
 
-func NewDataset(context *FlowContext) *Dataset {
+func newDataset(context *FlowContext) *Dataset {
 	d := &Dataset{
 		Id:          len(context.Datasets),
 		FlowContext: context,
+		Meta:        &DasetsetMetadata{TotalSize: -1},
 	}
 	context.Datasets = append(context.Datasets, d)
 	return d
@@ -33,13 +34,13 @@ func (d *Dataset) Init(scriptPart string) *Dataset {
 // Run starts the whole flow. This is a convenient method, same as *FlowContext.Run()
 func (d *Dataset) Run(option ...FlowOption) {
 	if len(option) == 0 {
-		Local.RunFlowContext(d.FlowContext)
+		local.RunFlowContext(d.FlowContext)
 	} else {
 		option[0].GetFlowRunner().RunFlowContext(d.FlowContext)
 	}
 }
 
-func (d *Dataset) SetupShard(n int) {
+func (d *Dataset) setupShard(n int) {
 	for i := 0; i < n; i++ {
 		ds := &DatasetShard{
 			Id:           i,

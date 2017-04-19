@@ -21,6 +21,42 @@ const (
 	MergeTwoShardToOneShard
 )
 
+type DatasetShardStatus int
+
+const (
+	Untouched DatasetShardStatus = iota
+	LocationAssigned
+	InProgress
+	InRetry
+	Failed
+	Successful
+)
+
+type ModeIO int
+
+const (
+	ModeInMemory ModeIO = iota
+	ModeOnDisk
+)
+
+type DasetsetMetadata struct {
+	TotalSize int64
+	OnDisk    ModeIO
+}
+
+type DasetsetShardMetadata struct {
+	TotalSize int64
+	Timestamp time.Time
+	URI       string
+	Status    DatasetShardStatus
+	Error     error
+}
+
+type StepMetadata struct {
+	IsRestartable bool
+	IsIdempotent  bool
+}
+
 type FlowContext struct {
 	PrevScriptType string
 	PrevScriptPart string
@@ -38,6 +74,7 @@ type Dataset struct {
 	ReadingSteps    []*Step
 	IsPartitionedBy []int
 	IsLocalSorted   []instruction.OrderBy
+	Meta            *DasetsetMetadata
 	RunLocked
 }
 
@@ -50,6 +87,7 @@ type DatasetShard struct {
 	Counter       int64
 	ReadyTime     time.Time
 	CloseTime     time.Time
+	Meta          *DasetsetShardMetadata
 }
 
 type Step struct {
@@ -57,15 +95,17 @@ type Step struct {
 	FlowContext    *FlowContext
 	InputDatasets  []*Dataset
 	OutputDataset  *Dataset
-	Function       func([]io.Reader, []io.Writer, *instruction.Stats)
+	Function       func([]io.Reader, []io.Writer, *instruction.Stats) error
 	Instruction    instruction.Instruction
 	Tasks          []*Task
 	Name           string
 	NetworkType    NetworkType
 	IsOnDriverSide bool
 	IsPipe         bool
+	IsGoCode       bool
 	Script         script.Script
 	Command        *script.Command // used in Pipe()
+	Meta           *StepMetadata
 	Params         map[string]interface{}
 	RunLocked
 }

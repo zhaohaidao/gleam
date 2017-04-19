@@ -1,16 +1,15 @@
 package plan
 
 import (
-	"github.com/chrislusf/gleam/msg"
 	"github.com/chrislusf/gleam/flow"
-	"github.com/golang/protobuf/proto"
+	"github.com/chrislusf/gleam/pb"
 )
 
-func TranslateToInstructionSet(taskGroups *TaskGroup) (ret *msg.InstructionSet) {
-	ret = &msg.InstructionSet{}
+func TranslateToInstructionSet(taskGroups *TaskGroup) (ret *pb.InstructionSet) {
+	ret = &pb.InstructionSet{}
 	lastShards := taskGroups.Tasks[len(taskGroups.Tasks)-1].OutputShards
 	if len(lastShards) > 0 {
-		ret.ReaderCount = proto.Int32(int32(len(lastShards[0].ReadingTasks)))
+		ret.ReaderCount = int32(len(lastShards[0].ReadingTasks))
 	}
 	for _, task := range taskGroups.Tasks {
 		instruction := translateToInstruction(task)
@@ -21,7 +20,7 @@ func TranslateToInstructionSet(taskGroups *TaskGroup) (ret *msg.InstructionSet) 
 	return
 }
 
-func translateToInstruction(task *flow.Task) (ret *msg.Instruction) {
+func translateToInstruction(task *flow.Task) (ret *pb.Instruction) {
 
 	if task.Step.IsOnDriverSide {
 		return nil
@@ -38,16 +37,13 @@ func translateToInstruction(task *flow.Task) (ret *msg.Instruction) {
 	// Command can come from Pipe() directly
 	// get an exec.Command
 	// println("processing step:", task.Step.Name)
-	if task.Step.Command == nil {
-		task.Step.Command = task.Step.Script.GetCommand()
-	}
-	command := task.Step.Command
+	command := task.Step.GetScriptCommand()
 
-	return &msg.Instruction{
-		Name: proto.String(task.Step.Name),
-		Script: &msg.Script{
-			IsPipe: proto.Bool(task.Step.IsPipe),
-			Path:   proto.String(command.Path),
+	return &pb.Instruction{
+		Name: task.Step.Name,
+		Script: &pb.Instruction_Script{
+			IsPipe: (task.Step.IsPipe),
+			Path:   command.Path,
 			Args:   command.Args,
 			Env:    command.Env,
 		},

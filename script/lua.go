@@ -8,12 +8,6 @@ type LuaScript struct {
 	operations []*Operation
 }
 
-func NewLuaScript() Script {
-	return &LuaScript{
-		luaCommand: "lua",
-	}
-}
-
 func NewLuajitScript() Script {
 	return &LuaScript{
 		luaCommand: "luajit",
@@ -22,13 +16,66 @@ func NewLuajitScript() Script {
 
 func (c *LuaScript) Init(code string) {
 	c.initCode = `
-local mp = require "MessagePack"
-mp.set_string 'binary'
-local unpack = table.unpack or unpack
 
+local mp = require "MessagePack"
+
+-- mp.set_string 'binary'
+
+--- log to stderr ----
 function log(message)
   io.stderr:write(message)
   io.stderr:write("\n")
+end
+
+-- list operations: pack and unpack a list
+local unpack = table.unpack or unpack
+
+-- collect all non nil elements into a table
+local function listCollect(t)
+  local ret = {}
+  for i=1, t.n do
+    if t[i] then
+      table.insert(ret, t[i])
+    end
+  end
+  return ret
+end
+
+local function listInsert(t, x)
+  t.n = t.n + 1
+  if x and type(x)=="table" and x.n then
+    t[t.n] = listCollect(x)
+  else
+    t[t.n] = x
+  end
+  return t
+end
+
+local function listNew(...)
+  local t = { ... }
+  t.n = select("#", ...)
+  return t
+end
+
+local function listUnpack(t)
+  return unpack(t, 1, t.n)
+end
+
+function listExtend(x, y)
+  if not y then return end
+  for i=1, y.n do listInsert(x,y[i]) end
+end
+
+function listEquals(x, y)
+  if x.n ~= y.n then
+    return false
+  end
+  for i=1,x.n do
+    if x[i] ~= y[i] then
+      return false
+    end
+  end
+  return true
 end
 
 -- Read an integer in LSB order.
@@ -52,6 +99,7 @@ function numbertobytes(num, width)
   return string.char(_n2b(width-1, math.modf(num/256)))
 end
 
+------------ read functions ---------
 -- read bytes
 function readEncodedBytes()
   local block = io.read(4)
@@ -65,12 +113,12 @@ end
 function decodeRow(encoded)
   if not encoded then return nil end
   local length = string.len(encoded)
-  local decoded = {}
+  local decoded = listNew()
   local start = 1
   local x = nil
   while start <= length do
     x, start = mp.unpack(encoded, start)
-    table.insert(decoded, x)
+    listInsert(decoded, x)
     if start > length then break end
   end
   return decoded
@@ -81,6 +129,7 @@ function readRow()
   return decodeRow(encoded)
 end
 
+------------ write functions ---------
 -- write bytes
 function writeBytes(encoded)
   io.write(numbertobytes(string.len(encoded), 4))
@@ -88,56 +137,22 @@ function writeBytes(encoded)
 end
 
 function writeRow(...)
-  local arg={...}
+  local width = select('#', ...)
   local encoded = ""
-  for i,v in ipairs(arg) do
-    if i == 1 then
-      encoded = mp.pack(v)
-    else
-      encoded = encoded .. mp.pack(v)
-    end
+  for i=1, width do
+    local v = select(i, ...)
+    encoded = encoded .. mp.pack(v)
+    -- log(i..":"..tostring(v))
   end
-  if #arg > 0 then
+  if width > 0 then
     writeBytes(encoded)
   end
 end
-
-function writeUnpackedRow(keys, values, unpackValues, extra)
-  if unpackValues then
-    local unpacked = {}
-    for i, v in ipairs(values) do
-      table.insert(unpacked, v[1])
-    end
-    writeRow(unpack(keys), unpacked, extra)
-  else
-    writeRow(unpack(keys), values, extra)
-  end
-end
-
-function listEquals(x, y)
-  for i,v in ipairs(x) do
-    if v ~= y[i] then
-      return false
-    end
-  end
-  return true
-end
-
-function tableLength(T)
-  local count = 0
-  for _ in pairs(T) do count = count + 1 end
-  return count
-end
-
+------------ helper functions ---------
 function set(list)
   local s = {}
   for _, l in ipairs(list) do s[l] = true end
   return s
-end
-
-function addToTable(x, y)
-  if not y then return end
-  for _, l in ipairs(y) do table.insert(x,l) end
 end
 
 function split(text, sep)

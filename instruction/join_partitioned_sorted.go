@@ -3,13 +3,12 @@ package instruction
 import (
 	"io"
 
-	"github.com/chrislusf/gleam/msg"
+	"github.com/chrislusf/gleam/pb"
 	"github.com/chrislusf/gleam/util"
-	"github.com/golang/protobuf/proto"
 )
 
 func init() {
-	InstructionRunner.Register(func(m *msg.Instruction) Instruction {
+	InstructionRunner.Register(func(m *pb.Instruction) Instruction {
 		if m.GetJoinPartitionedSorted() != nil {
 			return NewJoinPartitionedSorted(
 				m.GetJoinPartitionedSorted().GetIsLeftOuterJoin(),
@@ -35,26 +34,30 @@ func (b *JoinPartitionedSorted) Name() string {
 	return "JoinPartitionedSorted"
 }
 
-func (b *JoinPartitionedSorted) Function() func(readers []io.Reader, writers []io.Writer, stats *Stats) {
-	return func(readers []io.Reader, writers []io.Writer, stats *Stats) {
-		DoJoinPartitionedSorted(readers[0], readers[1], writers[0], b.indexes, b.isLeftOuterJoin, b.isRightOuterJoin)
+func (b *JoinPartitionedSorted) Function() func(readers []io.Reader, writers []io.Writer, stats *Stats) error {
+	return func(readers []io.Reader, writers []io.Writer, stats *Stats) error {
+		return DoJoinPartitionedSorted(readers[0], readers[1], writers[0], b.indexes, b.isLeftOuterJoin, b.isRightOuterJoin)
 	}
 }
 
-func (b *JoinPartitionedSorted) SerializeToCommand() *msg.Instruction {
-	return &msg.Instruction{
-		Name: proto.String(b.Name()),
-		JoinPartitionedSorted: &msg.JoinPartitionedSorted{
-			IsLeftOuterJoin:  proto.Bool(b.isLeftOuterJoin),
-			IsRightOuterJoin: proto.Bool(b.isRightOuterJoin),
+func (b *JoinPartitionedSorted) SerializeToCommand() *pb.Instruction {
+	return &pb.Instruction{
+		Name: b.Name(),
+		JoinPartitionedSorted: &pb.Instruction_JoinPartitionedSorted{
+			IsLeftOuterJoin:  (b.isLeftOuterJoin),
+			IsRightOuterJoin: (b.isRightOuterJoin),
 			Indexes:          getIndexes(b.indexes),
 		},
 	}
 }
 
+func (b *JoinPartitionedSorted) GetMemoryCostInMB(partitionSize int64) int64 {
+	return 5
+}
+
 // Top streamingly compare and get the top n items
 func DoJoinPartitionedSorted(leftRawChan, rightRawChan io.Reader, writer io.Writer, indexes []int,
-	isLeftOuterJoin, isRightOuterJoin bool) {
+	isLeftOuterJoin, isRightOuterJoin bool) error {
 	leftChan := newChannelOfValuesWithSameKey("left", leftRawChan, indexes)
 	rightChan := newChannelOfValuesWithSameKey("right", rightRawChan, indexes)
 
@@ -147,6 +150,8 @@ func DoJoinPartitionedSorted(leftRawChan, rightRawChan io.Reader, writer io.Writ
 			}
 		}
 	}
+
+	return nil
 
 }
 

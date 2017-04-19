@@ -1,10 +1,10 @@
 package flow
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
-	"sync"
 
 	"github.com/chrislusf/gleam/instruction"
 	"github.com/chrislusf/gleam/util"
@@ -15,16 +15,21 @@ func (d *Dataset) Output(f func(io.Reader) error) *Dataset {
 	step := d.FlowContext.AddAllToOneStep(d, nil)
 	step.IsOnDriverSide = true
 	step.Name = "Output"
-	step.Function = func(readers []io.Reader, writers []io.Writer, stats *instruction.Stats) {
-		var wg sync.WaitGroup
+	step.Function = func(readers []io.Reader, writers []io.Writer, stats *instruction.Stats) error {
+		errChan := make(chan error, len(readers))
 		for i, reader := range readers {
-			wg.Add(1)
 			go func(i int, reader io.Reader) {
-				defer wg.Done()
-				f(reader)
+				errChan <- f(reader)
 			}(i, reader)
 		}
-		wg.Wait()
+		for range readers {
+			err := <-errChan
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to process output: %v\n", err)
+				return err
+			}
+		}
+		return nil
 	}
 	return d
 }
@@ -34,11 +39,13 @@ func (d *Dataset) Output(f func(io.Reader) error) *Dataset {
 // Otherwise, each row of output is written in tab-separated lines.
 func (d *Dataset) PipeOut(writer io.Writer) *Dataset {
 	fn := func(reader io.Reader) error {
+		w := bufio.NewWriter(writer)
+		defer w.Flush()
 		if d.Step.IsPipe {
-			_, err := io.Copy(writer, reader)
+			_, err := io.Copy(w, reader)
 			return err
 		}
-		return util.FprintRowsFromChannel(reader, writer, "\t", "\n")
+		return util.PrintDelimited(reader, w, "\t", "\n")
 	}
 	return d.Output(fn)
 }
@@ -46,10 +53,12 @@ func (d *Dataset) PipeOut(writer io.Writer) *Dataset {
 // Fprintf formats using the format for each row and writes to writer.
 func (d *Dataset) Fprintf(writer io.Writer, format string) *Dataset {
 	fn := func(reader io.Reader) error {
+		w := bufio.NewWriter(writer)
+		defer w.Flush()
 		if d.Step.IsPipe {
-			return util.TsvPrintf(reader, writer, format)
+			return util.TsvPrintf(reader, w, format)
 		}
-		return util.Fprintf(reader, writer, format)
+		return util.Fprintf(reader, w, format)
 	}
 	return d.Output(fn)
 }

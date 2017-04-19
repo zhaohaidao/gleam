@@ -2,6 +2,7 @@ package script
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,12 +13,12 @@ import (
 )
 
 func TestLuaCommander(t *testing.T) {
-	NewLuaScript()
+	NewLuajitScript()
 }
 
 func TestLuaMap(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test mapper",
 		func(script Script) {
 			script.Map(`function(x,y,z) return x+1, y.."yyy", not z end`)
@@ -31,7 +32,7 @@ func TestLuaMap(t *testing.T) {
 				fmt.Fprintf(os.Stderr, "read row error: %v", err)
 				return
 			}
-			if !(row[0].(uint64) == 2000 && bytes.Equal(row[1].([]byte), []byte("xxxyyy")) && row[2].(bool) == true) {
+			if !(row[0].(uint64) == 2000 && (row[1].(string) == "xxxyyy") && row[2].(bool) == true) {
 				t.Errorf("failed map results: %+v", row)
 			}
 
@@ -41,7 +42,7 @@ func TestLuaMap(t *testing.T) {
 
 func TestLuaFilter(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test filter",
 		func(script Script) {
 			script.Filter(`
@@ -59,11 +60,13 @@ func TestLuaFilter(t *testing.T) {
 		func(outputReader io.Reader) {
 			row, _ := util.ReadRow(outputReader)
 			if !(row[0].(uint64) == 1999 && bytes.Equal(row[1].([]byte), []byte("x1999"))) {
+				fmt.Printf("row: %+v\n", row)
 				t.Errorf("failed filter results: %+v", row)
 			}
 
 			row, _ = util.ReadRow(outputReader)
 			if !(row[0].(uint64) == 1 && bytes.Equal(row[1].([]byte), []byte("x1"))) {
+				fmt.Printf("row: %+v\n", row)
 				t.Errorf("failed filter results: %+v", row)
 			}
 
@@ -73,7 +76,7 @@ func TestLuaFilter(t *testing.T) {
 
 func TestLuaFlatMap(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test FlatMap",
 		func(script Script) {
 			script.FlatMap(`
@@ -87,16 +90,47 @@ func TestLuaFlatMap(t *testing.T) {
 		},
 		func(outputReader io.Reader) {
 			row, _ := util.ReadRow(outputReader)
-			if !(bytes.Equal(row[0].([]byte), []byte("x1"))) {
+			if row[0].(string) != "x1" {
 				t.Errorf("failed FlatMap results: %+v", row)
 			}
 			row, _ = util.ReadRow(outputReader)
-			if !(bytes.Equal(row[0].([]byte), []byte("x2"))) {
+			if row[0].(string) != "x2" {
 				t.Errorf("failed FlatMap results: %+v", row)
 			}
 			row, _ = util.ReadRow(outputReader)
-			if !(bytes.Equal(row[0].([]byte), []byte("x3"))) {
+			if row[0].(string) != "x3" {
 				t.Errorf("failed FlatMap results: %+v", row)
+			}
+		},
+	)
+}
+
+func TestLuaMapWithNil(t *testing.T) {
+
+	testLuaScript(
+		"test mapper",
+		func(script Script) {
+			script.Map(`
+			function(x, y, z)
+                --log("received "..tostring(x)..":"..tostring(y)..":"..tostring(z))
+				return x, y, z
+			end`)
+		},
+		func(inputWriter io.Writer) {
+			// The row we write has nil on index 1:
+			util.WriteRow(inputWriter, 8888, nil, "hello")
+		},
+		func(outputReader io.Reader) {
+			row, err := util.ReadRow(outputReader)
+			if err != nil {
+				t.Errorf("read row error: %v", err)
+				return
+			}
+			if row[1] != nil {
+				t.Errorf("Row no longer contains nil: %+v", row)
+			}
+			if row[2].(string) != "hello" {
+				t.Errorf("Row no longer contains elements after nil: %+v", row[2])
 			}
 		},
 	)
@@ -104,7 +138,7 @@ func TestLuaFlatMap(t *testing.T) {
 
 func TestLuaSelect(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test filter",
 		func(script Script) {
 			script.Select([]int{2, 1})
@@ -115,12 +149,12 @@ func TestLuaSelect(t *testing.T) {
 		},
 		func(outputReader io.Reader) {
 			row, _ := util.ReadRow(outputReader)
-			if !(row[1].(uint64) == 1 && bytes.Equal(row[0].([]byte), []byte("x1"))) {
+			if !(row[1].(uint64) == 1 && row[0].(string) == "x1") {
 				t.Errorf("failed select results: %+v", row)
 			}
 
 			row, _ = util.ReadRow(outputReader)
-			if !(row[1].(uint64) == 2 && bytes.Equal(row[0].([]byte), []byte("x2"))) {
+			if !(row[1].(uint64) == 2 && row[0].(string) == "x2") {
 				t.Errorf("failed select results: %+v", row)
 			}
 
@@ -130,41 +164,58 @@ func TestLuaSelect(t *testing.T) {
 
 func TestLuaLimit(t *testing.T) {
 
-	testScript(
+	testLuaScript(
 		"test Limit",
 		func(script Script) {
-			script.Limit(1)
+			script.Limit(1, 1)
 		},
 		func(inputWriter io.Writer) {
 			util.WriteRow(inputWriter, 1, "x1", 8)
 			util.WriteRow(inputWriter, 2, "x2", 7)
+			util.WriteRow(inputWriter, 3, "x3", 6)
+			util.WriteRow(inputWriter, 4, "x4", 21)
+			util.WriteRow(inputWriter, 5, "x5", 22)
 		},
 		func(outputReader io.Reader) {
+			// read first row
 			row, _ := util.ReadRow(outputReader)
+			fmt.Printf("row: %+v\n", row)
+			if !(row[0].(uint64) == 2 && row[1].(string) == "x2") {
+				t.Errorf("failed select results: %+v", row)
+			}
+
+			// read second row
 			row, _ = util.ReadRow(outputReader)
 			if row != nil {
 				t.Errorf("failed to take 1 row: %+v", row)
 			}
-
 		},
 	)
 }
 
-func testScript(testName string, invokeLuaScriptFunc func(script Script),
+func testLuaScript(testName string, invokeLuaScriptFunc func(script Script),
 	inputFunc func(inputWriter io.Writer),
 	outputFunc func(outputReader io.Reader)) {
+
 	var luaScript Script
 
-	luaScript = NewLuaScript()
+	luaScript = NewLuajitScript()
 	luaScript.Init("")
+
+	testScript(testName, luaScript, invokeLuaScriptFunc, inputFunc, outputFunc)
+}
+
+func testScript(testName string, script Script, invokeScriptFunc func(script Script),
+	inputFunc func(inputWriter io.Writer),
+	outputFunc func(outputReader io.Reader)) {
 
 	input, output := util.NewPiper(), util.NewPiper()
 
-	invokeLuaScriptFunc(luaScript)
+	invokeScriptFunc(script)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go util.Execute(&wg, testName, luaScript.GetCommand().ToOsExecCommand(), input, output, false, false, true, os.Stderr)
+	go util.Execute(context.Background(), &wg, testName, script.GetCommand().ToOsExecCommand(), input.Reader, output.Writer, false, false, true, os.Stderr)
 
 	wg.Add(1)
 	go func() {

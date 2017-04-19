@@ -4,13 +4,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/chrislusf/gleam/msg"
+	"github.com/chrislusf/gleam/pb"
 	"github.com/chrislusf/gleam/util"
-	"github.com/golang/protobuf/proto"
 )
 
 func init() {
-	InstructionRunner.Register(func(m *msg.Instruction) Instruction {
+	InstructionRunner.Register(func(m *pb.Instruction) Instruction {
 		if m.GetLocalTop() != nil {
 			return NewLocalTop(
 				int(m.GetLocalTop().GetN()),
@@ -34,24 +33,28 @@ func (b *LocalTop) Name() string {
 	return "LocalTop"
 }
 
-func (b *LocalTop) Function() func(readers []io.Reader, writers []io.Writer, stats *Stats) {
-	return func(readers []io.Reader, writers []io.Writer, stats *Stats) {
-		DoLocalTop(readers[0], writers[0], b.n, b.orderBys)
+func (b *LocalTop) Function() func(readers []io.Reader, writers []io.Writer, stats *Stats) error {
+	return func(readers []io.Reader, writers []io.Writer, stats *Stats) error {
+		return DoLocalTop(readers[0], writers[0], b.n, b.orderBys)
 	}
 }
 
-func (b *LocalTop) SerializeToCommand() *msg.Instruction {
-	return &msg.Instruction{
-		Name: proto.String(b.Name()),
-		LocalTop: &msg.LocalTop{
-			N:        proto.Int32(int32(b.n)),
+func (b *LocalTop) SerializeToCommand() *pb.Instruction {
+	return &pb.Instruction{
+		Name: b.Name(),
+		LocalTop: &pb.Instruction_LocalTop{
+			N:        int32(b.n),
 			OrderBys: getOrderBys(b.orderBys),
 		},
 	}
 }
 
+func (b *LocalTop) GetMemoryCostInMB(partitionSize int64) int64 {
+	return 5
+}
+
 // Top streamingly compare and get the top n items
-func DoLocalTop(reader io.Reader, writer io.Writer, n int, orderBys []OrderBy) {
+func DoLocalTop(reader io.Reader, writer io.Writer, n int, orderBys []OrderBy) error {
 	indexes := getIndexesFromOrderBys(orderBys)
 	pq := newMinQueueOfPairs(orderBys)
 
@@ -74,6 +77,7 @@ func DoLocalTop(reader io.Reader, writer io.Writer, n int, orderBys []OrderBy) {
 	})
 	if err != nil {
 		fmt.Printf("Top>Failed to process input data:%v\n", err)
+		return err
 	}
 
 	// read data out of the priority queue
@@ -86,6 +90,8 @@ func DoLocalTop(reader io.Reader, writer io.Writer, n int, orderBys []OrderBy) {
 	for i := length - 1; i >= 0; i-- {
 		util.WriteMessage(writer, itemsToReverse[i])
 	}
+
+	return nil
 }
 
 func newMinQueueOfPairs(orderBys []OrderBy) *util.PriorityQueue {

@@ -1,41 +1,46 @@
-# gleam
-Gleam is a high performance and efficient distributed execution system, and also 
+# Gleam
+[![Build Status](https://travis-ci.org/chrislusf/gleam.svg?branch=master)](https://travis-ci.org/chrislusf/gleam)
+[![GoDoc](https://godoc.org/github.com/chrislusf/gleam/flow?status.svg)](https://godoc.org/github.com/chrislusf/gleam/flow)
+[![Wiki](https://img.shields.io/badge/docs-wiki-blue.svg)](https://github.com/chrislusf/gleam/wiki)
+[![Go Report Card](https://goreportcard.com/badge/github.com/chrislusf/gleam)](https://goreportcard.com/report/github.com/chrislusf/gleam)
+[![codecov](https://codecov.io/gh/chrislusf/gleam/branch/master/graph/badge.svg)](https://codecov.io/gh/chrislusf/gleam)
+
+Gleam is a high performance and efficient distributed execution system, and also
 simple, generic, flexible and easy to customize.
 
-Gleam is built in Go, and the user defined computation can be written in Lua, 
+Gleam is built in Go, and the user defined computation can be written in Go, Lua,
 Unix pipe tools, or any streaming programs.
+
+It is convenient to write logic in Lua, but Lua is optional. Go is also supported with a little bit extra effort.
 
 ### High Performance
 
-* Go itself has high performance and concurrency.
-* LuaJIT also has high performance comparable to C, Java, Go.
-* LuaJIT stream processes data, no context switches between Go and Lua.
+* Pure Go mappers and reducers have high performance and concurrency.
+* Optional LuaJIT also has high performance comparable to C, Java, Go. It streamingly processes data, without context switch between Go and Lua.
+* Data flows through memory, optionally to disk.
+* Multiple map reduce steps are merged together for better performance.
+
 
 ### Memory Efficient
 
-* Gleam does not have the common GC problem that plagued other languages. Each executor is run in a separated OS process.
-* Gleam master and agent servers does not run actual computation.
-* Gleam master and agent servers are memory efficient, consuming less than 10 MB memory.
-* LuaJIT runs in parallel OS processes. The memory is managed by the OS.
-* One machine can host many more executors.
-
-The shuffle step in map-shuffle-reduce is costly because it usually needs to go through disk, since usually there are not enough executors to process the data partitions at the same time. But when one server can host many more executors, the partitions generated can be drained directly without touching disk.
+* Gleam does not have the common GC problem that plagued other languages. Each executor is run in a separated OS process. The memory is managed by the OS. One machine can host many more executors.
+* Gleam master and agent servers are memory efficient, consuming about 10 MB memory.
+* Gleam tries to automatically adjust the required memory size based on data size hints, avoiding the try-and-error manual memory tuning effort.
 
 ### Flexible
 * The Gleam flow can run standalone or distributed.
-* Data flows in Gleam either through memory and network, or optionally to disk for later re-tries.
+* Adjustable in memory mode or OnDisk mode.
 
 ### Easy to Customize
 * The Go code is much simpler to read than Scala, Java, C++.
-* LuaJIT FFI library can easily invoke any C functions, for even more performance or use any existing C libraries.
+* Optional LuaJIT FFI library can easily invoke any C functions, for even more performance or use any existing C libraries.
 * (future) Write SQL with UDF written in Lua.
 
 # One Flow, Multiple ways to execute
 Gleam code defines the flow, specifying each dataset(vertex) and computation step(edge), and build up a directed
 acyclic graph(DAG). There are multiple ways to execute the DAG.
 
-The default way is to run locally. This works in most cases. Actually this runs much faster than distributed mode
-if your data is not much.
+The default way is to run locally. This works in most cases.
 
 Here we mostly talk about the distributed mode.
 
@@ -73,12 +78,76 @@ By leaving it in memory, the flow can have back pressure, and can support stream
 * [Gleam Wiki] (https://github.com/chrislusf/gleam/wiki)
 * [Installation](https://github.com/chrislusf/gleam/wiki/Installation)
 * [Gleam Flow API GoDoc](https://godoc.org/github.com/chrislusf/gleam/flow)
+* [gleam-dev on Slack](https://gleam-dev.slack.com)
 
 # Standalone Example
 
 ## Word Count
-The full source code, not snippet, for word count:
+
+#### Word Count by Pure Go
+
+Basically, you need to register the Go functions first.
+It will return a mapper or reducer function id, which we can pass it to the flow.
+
+```go
+package main
+
+import (
+	"strings"
+	"os"
+
+	"github.com/chrislusf/gleam/flow"
+	"github.com/chrislusf/gleam/gio"
+)
+
+var (
+	MapperTokenizer = gio.RegisterMapper(tokenize)
+	MapperAddOne    = gio.RegisterMapper(addOne)
+	ReducerSum      = gio.RegisterReducer(sum)
+)
+
+func main(){
+
+	gio.Init() // required, place it right after main() starts
+
+	flow.New().TextFile("/etc/passwd").
+		Mapper(MapperTokenizer). // invoke the registered "tokenize" mapper function.
+		Mapper(MapperAddOne).    // invoke the registered "addOne" mapper function.
+		ReducerBy(ReducerSum).   // invoke the registered "sum" reducer function.
+		Sort(flow.OrderBy(2, true)).
+		Fprintf(os.Stdout, "%s %d\n").Run()
+}
+
+func tokenize(row []interface{}) error {
+	line := string(row[0].([]byte))
+	for _, s := range strings.FieldsFunc(line, func(r rune) bool {
+		return !('A' <= r && r <= 'Z' || 'a' <= r && r <= 'z' || '0' <= r && r <= '9')
+	}) {
+		gio.Emit(s)
+	}
+	return nil
+}
+
+func addOne(row []interface{}) error {
+	word := string(row[0].([]byte))
+	gio.Emit(word, 1)
+	return nil
+}
+
+func sum(x, y interface{}) (interface{}, error) {
+	return x.(uint64) + y.(uint64), nil
+}
+
 ```
+
+A more blown up example is here.
+https://github.com/chrislusf/gleam/blob/master/examples/word_count_in_go/word_count_in_go.go
+
+
+#### Word Count by LuaJIT
+
+LuaJIT can greatly simplify the code. The full source code, not snippet, for word count:
+```go
 package main
 
 import (
@@ -106,8 +175,9 @@ func main() {
 
 ```
 
+#### Word Count by Unix Pipe Tools
 Another way to do the similar:
-```
+```go
 package main
 
 import (
@@ -127,26 +197,26 @@ func main() {
 
 ```
 
-## Join two CSV files. 
+## Join two CSV files.
 
 Assume there are file "a.csv" has fields "a1, a2, a3, a4, a5" and file "b.csv" has fields "b1, b2, b3". We want to join the rows where a1 = b2. And the output format should be "a1, a4, b3".
 
-```
+```go
 package main
 
 import (
 	"os"
 
-	"github.com/chrislusf/gleam/flow"
-	"github.com/chrislusf/gleam/source/csv"
+	. "github.com/chrislusf/gleam/flow"
+	"github.com/chrislusf/gleam/plugins/csv"
 )
 
 func main() {
 
-	f := flow.New()
-	a := f.Input(csv.New("a.csv")).Select(1,4) // a1, a4
-	b := f.Input(csv.New("b.csv")).Select(2,3) // b2, b3
-	
+	f := New()
+	a := f.ReadFile(csv.New("a.csv")).Select(Field(1,4)) // a1, a4
+	b := f.ReadFile(csv.New("b.csv")).Select(Field(2,3)) // b2, b3
+
 	a.Join(b).Fprintf(os.Stdout, "%s,%s,%s\n").Run()  // a1, a4, b3
 
 }
@@ -156,12 +226,11 @@ func main() {
 ## Parallel Execution
 Unix Pipes are easy for sequential pipes, but limited to fan out, and even more limited to fan in.
 
-With Gleam, fan-in and fan-out parallel pipes become very easy. (And this can be in distributed mode too!)
+With Gleam, fan-in and fan-out parallel pipes become very easy.
 
 This example get a list of file names, partitioned into 3 groups, and then process them in parallel.
-This flow can be changed to use Pipe() also, of course.
 
-```
+```go
 // word_count.go
 package main
 
@@ -180,7 +249,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	flow.New().Lines(fileNames).Partition(3).PipeAsArgs("cat $1").FlatMap(`
+	flow.New().Strings(fileNames).Partition(3).PipeAsArgs("cat $1").FlatMap(`
       function(line)
         return line:gmatch("%w+")
       end
@@ -199,24 +268,30 @@ func main() {
 ```
 
 # Distributed Computing
-## Setup Gleam Cluster
-Start a gleam master and serveral gleam agents
-```
+## Setup Gleam Cluster Locally
+Start a gleam master and several gleam agents
+```go
 // start "gleam master" on a server
 > go get github.com/chrislusf/gleam/distributed/gleam
 > gleam master --address=":45326"
 
-// start up "gleam agent" on some diffent servers or ports
+// start up "gleam agent" on some different servers or ports
 // if a different server, remember to install Luajit and copy the MessagePack.lua file also.
 > gleam agent --dir=2 --port 45327 --host=127.0.0.1
 > gleam agent --dir=3 --port 45328 --host=127.0.0.1
+```
+
+## Setup Gleam Cluster on Kubernetes
+Start a gleam master and several gleam agents
+```bash
+kubectl apply -f k8s/
 ```
 
 ## Change Execution Mode.
 
 After the flow is defined, the Run() function can be executed in different ways: local mode, distributed mode, or planner mode.
 
-```
+```go
   f := flow.New()
   ...
   // local mode
@@ -232,26 +307,30 @@ After the flow is defined, the Run() function can be executed in different ways:
   f.Run(distributed.Planner())
 
 ```
+# Write Mapper Reducer in Go
+
+LuaJIT is easy, but sometimes we really need to write in Go. It is a bit more complicated, but not much. Gleam allows us to write a simple Go code with mapper or reducer logic, and automatically send it over to Gleam agents to execute. See https://github.com/chrislusf/gleam/wiki/Write-Mapper-Reducer-in-Go
+
+# Important Features
+
+* Fault tolerant [OnDisk()](https://godoc.org/github.com/chrislusf/gleam/flow#Dataset.OnDisk).
+* Support Cassandra Fast Data Extraction.
+* Read data from Local, HDFS, or S3.
 
 # Status
-Gleam is just beginning. Here are a few todo that needs help:
-* Add better streaming support
-* Add better integration with Torch
-* Add better SQL database support
-* Caching of often re-calculated data.
-* Fault tolerant on unstable network/cluster.
-
-Maybe:
-* Add Python support
-* Add Javascript support
-
+Gleam is just beginning. Here are a few todo items. Welcome any help!
+* Refactor the plugin system to read external data.
+* Add schema support for each dataset.
+* Support using SQL as a flow step, similar to LINQ.
+* Add windowing functions similar to google dataflow.
+* Add dataset metadata for better caching of often re-calculated data.
 
 Especially Need Help Now:
-* Go implementation to read Parquet files
+* Go implementation to read Parquet files.
 
-Help is needed. Anything is welcome. Small things count: fix documentation, adding a logo, adding docker image, blog about it, share it, etc.
+Please start to use it and give feedback. Help is needed. Anything is welcome. Small things count: fix documentation, adding a logo, adding docker image, blog about it, share it, etc.
 
-[![](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=EEECLJ8QGTTPC) 
+[![](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=EEECLJ8QGTTPC)
 
 ## License
 

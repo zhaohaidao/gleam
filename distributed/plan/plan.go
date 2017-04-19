@@ -3,8 +3,11 @@ package plan
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/chrislusf/gleam/flow"
+	"github.com/chrislusf/gleam/pb"
 )
 
 type TaskGroup struct {
@@ -13,12 +16,18 @@ type TaskGroup struct {
 	Parents         []*TaskGroup
 	ParentStepGroup *StepGroup
 	RequestId       uint32 // id for actual request when running
+	WaitAt          time.Time
+	StartAt         time.Time
+	StopAt          time.Time
+	Error           error
 }
 
 type StepGroup struct {
 	Steps      []*flow.Step
 	Parents    []*StepGroup
 	TaskGroups []*TaskGroup
+	sync.Mutex
+	waitForAllTasks *sync.Cond
 }
 
 func GroupTasks(fc *flow.FlowContext) ([]*StepGroup, []*TaskGroup) {
@@ -27,7 +36,9 @@ func GroupTasks(fc *flow.FlowContext) ([]*StepGroup, []*TaskGroup) {
 }
 
 func NewStepGroup() *StepGroup {
-	return &StepGroup{}
+	sg := &StepGroup{}
+	sg.waitForAllTasks = sync.NewCond(sg)
+	return sg
 }
 
 func (t *StepGroup) AddStep(Step *flow.Step) *StepGroup {
@@ -59,5 +70,41 @@ func (t *TaskGroup) String() string {
 	for _, task := range t.Tasks {
 		steps = append(steps, fmt.Sprintf("%s.%d", task.Step.Name, task.Id))
 	}
-	return "taskGroup:" + strings.Join(steps, "-")
+	return strings.Join(steps, "-")
+}
+
+func (t *TaskGroup) RequiredResources() *pb.ComputeResource {
+
+	resource := &pb.ComputeResource{
+		CpuCount: 1,
+		CpuLevel: 1,
+	}
+
+	for _, task := range t.Tasks {
+		inst := task.Step.Instruction
+		if inst != nil && task.Step.OutputDataset != nil {
+			taskMemSize := inst.GetMemoryCostInMB(task.Step.OutputDataset.GetPartitionSize())
+			resource.MemoryMb += taskMemSize
+			// log.Printf("  %s : %s (%d MB)\n", t.String(), task.Step.Name, taskMemSize)
+		}
+	}
+
+	return resource
+}
+
+func (t *TaskGroup) MarkStop(err error) {
+	t.StopAt = time.Now()
+	t.Error = err
+	t.ParentStepGroup.waitForAllTasks.Broadcast()
+}
+
+func (s *StepGroup) WaitForAllTasksToComplete() {
+	s.Lock()
+	defer s.Unlock()
+
+	for _, taskGroup := range s.TaskGroups {
+		for taskGroup.StopAt.IsZero() || taskGroup.Error != nil {
+			s.waitForAllTasks.Wait()
+		}
+	}
 }

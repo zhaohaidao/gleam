@@ -1,20 +1,20 @@
 package instruction
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
 
-	"github.com/chrislusf/gleam/msg"
+	"github.com/chrislusf/gleam/pb"
 	"github.com/chrislusf/gleam/script"
 	"github.com/chrislusf/gleam/util"
-	"github.com/golang/protobuf/proto"
 )
 
 func init() {
-	InstructionRunner.Register(func(m *msg.Instruction) Instruction {
+	InstructionRunner.Register(func(m *pb.Instruction) Instruction {
 		if m.GetPipeAsArgs() != nil {
 			return NewPipeAsArgs(m.GetPipeAsArgs().GetCode())
 		}
@@ -34,23 +34,27 @@ func (b *PipeAsArgs) Name() string {
 	return "PipeAsArgs"
 }
 
-func (b *PipeAsArgs) Function() func(readers []io.Reader, writers []io.Writer, stats *Stats) {
-	return func(readers []io.Reader, writers []io.Writer, stats *Stats) {
-		DoPipeAsArgs(readers[0], writers[0], b.code)
+func (b *PipeAsArgs) Function() func(readers []io.Reader, writers []io.Writer, stats *Stats) error {
+	return func(readers []io.Reader, writers []io.Writer, stats *Stats) error {
+		return DoPipeAsArgs(readers[0], writers[0], b.code)
 	}
 }
 
-func (b *PipeAsArgs) SerializeToCommand() *msg.Instruction {
-	return &msg.Instruction{
-		Name: proto.String(b.Name()),
-		PipeAsArgs: &msg.PipeAsArgs{
-			Code: proto.String(b.code),
+func (b *PipeAsArgs) SerializeToCommand() *pb.Instruction {
+	return &pb.Instruction{
+		Name: b.Name(),
+		PipeAsArgs: &pb.Instruction_PipeAsArgs{
+			Code: b.code,
 		},
 	}
 }
 
+func (b *PipeAsArgs) GetMemoryCostInMB(partitionSize int64) int64 {
+	return 3
+}
+
 // Top streamingly compare and get the top n items
-func DoPipeAsArgs(reader io.Reader, writer io.Writer, code string) {
+func DoPipeAsArgs(reader io.Reader, writer io.Writer, code string) error {
 	var wg sync.WaitGroup
 
 	err := util.ProcessMessage(reader, func(input []byte) error {
@@ -78,7 +82,7 @@ func DoPipeAsArgs(reader io.Reader, writer io.Writer, code string) {
 		}
 		// write output to writer
 		wg.Add(1)
-		util.Execute(&wg, "PipeArgs", command.ToOsExecCommand(), nil, writer, false, true, false, os.Stderr)
+		util.Execute(context.Background(), &wg, "PipeArgs", command.ToOsExecCommand(), nil, writer, false, true, false, os.Stderr)
 		//wg.Wait()
 		return nil
 	})
@@ -86,4 +90,5 @@ func DoPipeAsArgs(reader io.Reader, writer io.Writer, code string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "PipeArgs> Error: %v\n", err)
 	}
+	return err
 }

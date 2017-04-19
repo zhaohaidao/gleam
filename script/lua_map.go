@@ -14,8 +14,8 @@ while true do
   local row = readRow()
   if not row then break end
 
-  local t = {_map(unpack(row))}
-  writeRow(unpack(t))
+  writeRow(_map(listUnpack(row)))
+
 end
 `, code),
 	})
@@ -33,7 +33,7 @@ while true do
   local row = decodeRow(encodedBytes)
   if not row then break end
 
-  if _filter(unpack(row)) then
+  if _filter(listUnpack(row)) then
     writeBytes(encodedBytes)
   end
 end
@@ -50,7 +50,7 @@ while true do
   local row = readRow()
   if not row then break end
 
-  _foreach(unpack(row))
+  _foreach(listUnpack(row))
 end
 `, code),
 	})
@@ -66,7 +66,8 @@ while true do
   local row = readRow()
   if not row then break end
 
-  local t = _flatMap(unpack(row))
+  local t = _flatMap(listUnpack(row))
+  -- assuming no nil in the returned list
   if t then
     for x in t do
       writeRow(x)
@@ -97,21 +98,26 @@ func (c *LuaScript) Select(indexes []int) {
 		strings.Join(returns, ",")))
 }
 
-func (c *LuaScript) Limit(n int) {
+func (c *LuaScript) Limit(limit int, offset int) {
 	c.operations = append(c.operations, &Operation{
 		Type: "Limit",
 		Code: fmt.Sprintf(`
 
-local count = %d
+local count = %d - 0.5
+local offset = %d - 0.5
 
 while true do
   local row = readRow()
   if not row then break end
   if count > 0 then
-    count = count - 1
-    writeRow(unpack(row))
+    if offset > 0 then
+      offset = offset - 1
+    else
+      count = count - 1
+      writeRow(listUnpack(row))
+    end
   end
 end
-`, n),
+`, limit, offset),
 	})
 }

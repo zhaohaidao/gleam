@@ -4,13 +4,12 @@ import (
 	"io"
 	"log"
 
-	"github.com/chrislusf/gleam/msg"
+	"github.com/chrislusf/gleam/pb"
 	"github.com/chrislusf/gleam/util"
-	"github.com/golang/protobuf/proto"
 )
 
 func init() {
-	InstructionRunner.Register(func(m *msg.Instruction) Instruction {
+	InstructionRunner.Register(func(m *pb.Instruction) Instruction {
 		if m.GetScatterPartitions() != nil {
 			return NewScatterPartitions(
 				toInts(m.GetScatterPartitions().GetIndexes()),
@@ -32,32 +31,36 @@ func (b *ScatterPartitions) Name() string {
 	return "ScatterPartitions"
 }
 
-func (b *ScatterPartitions) Function() func(readers []io.Reader, writers []io.Writer, stats *Stats) {
-	return func(readers []io.Reader, writers []io.Writer, stats *Stats) {
-		DoScatterPartitions(readers[0], writers, b.indexes)
+func (b *ScatterPartitions) Function() func(readers []io.Reader, writers []io.Writer, stats *Stats) error {
+	return func(readers []io.Reader, writers []io.Writer, stats *Stats) error {
+		return DoScatterPartitions(readers[0], writers, b.indexes)
 	}
 }
 
-func (b *ScatterPartitions) SerializeToCommand() *msg.Instruction {
-	return &msg.Instruction{
-		Name: proto.String(b.Name()),
-		ScatterPartitions: &msg.ScatterPartitions{
+func (b *ScatterPartitions) SerializeToCommand() *pb.Instruction {
+	return &pb.Instruction{
+		Name: b.Name(),
+		ScatterPartitions: &pb.Instruction_ScatterPartitions{
 			Indexes: getIndexes(b.indexes),
 		},
 	}
 }
 
-func DoScatterPartitions(reader io.Reader, writers []io.Writer, indexes []int) {
+func (b *ScatterPartitions) GetMemoryCostInMB(partitionSize int64) int64 {
+	return 5
+}
+
+func DoScatterPartitions(reader io.Reader, writers []io.Writer, indexes []int) error {
 	shardCount := len(writers)
 
-	util.ProcessMessage(reader, func(data []byte) error {
+	return util.ProcessMessage(reader, func(data []byte) error {
 		keyObjects, err := util.DecodeRowKeys(data, indexes)
 		if err != nil {
 			log.Printf("Failed to find keys on %v", indexes)
 			return err
 		}
 		x := util.PartitionByKeys(shardCount, keyObjects)
-		util.WriteMessage(writers[x], data)
-		return nil
+		return util.WriteMessage(writers[x], data)
 	})
+
 }
